@@ -3,6 +3,7 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import kotlin.math.abs
 
 object AppExcel {
 
@@ -18,6 +19,16 @@ object AppExcel {
 
         createSumByMishloahExcel(headers, rows, supplierSumFile)
 
+        compareFiles(receiverOutFile, receiverHeaders, receiverRows, headers, rows)
+    }
+
+    private fun compareFiles(
+        receiverOutFile: File,
+        receiverHeaders: List<String>,
+        receiverRows: List<List<String?>>,
+        headers: List<String>,
+        rows: List<List<String?>>
+    ) {
         val wbOut = XSSFWorkbook();
         val sheet = wbOut.createSheet("new sheet")
         sheet.ctWorksheet.sheetViews.getSheetViewArray(0).rightToLeft = true
@@ -32,30 +43,41 @@ object AppExcel {
         val shemNekudaIndex = takeIndex(receiverHeaders, "שם הנקודה")
         val priceIndex = takeIndex(receiverHeaders, """לתשלום""")
         val sapakIndex = 6//takeIndex(receiverHeaders, """דרישת ספק""")
+        //val mahMakorIndex = takeIndex(receiverHeaders, """מך מקור""")
 
         val supplierPointIndex = 9 //takeIndex(headers, )
         val supplierMishloahIndex = takeIndex(headers, "ת. משלוח")
         val supplierDateIndex = takeIndex(headers, "תאריך משלוח")
         val supplierPriceIndex = takeIndex(headers, """ס. עם מע"מ""")
+        //val supplierAsmahtaIndex = takeIndex(headers, """ס. עם מע"מ""")
 
         var rowNum = 1
         receiverRows.forEach { r ->
             val currRow = sheet.createRow(rowNum++)
             r.indices.forEach { currRow.createCell(it).setCellValue(r[it]) }
 
-            val correspondingRow =
-                searchRowInSupplier(
-                    r[mMismahIndex],
-                    r[dateIndex],
-                    r[shemNekudaIndex],
-                    r[priceIndex],
-                    rows,
-                    supplierPointIndex,
-                    supplierMishloahIndex,
-                    supplierDateIndex,
-                    supplierPriceIndex
-                )
-            currRow.createCell(sapakIndex).setCellValue(correspondingRow?.get(supplierPriceIndex)?:"<NO>")
+            val price = r[priceIndex]
+            if (!price.isNullOrBlank()) {
+                val nearestAmount =
+                    searchRowInSupplier(
+                        r[mMismahIndex],
+                        r[dateIndex],
+                        r[shemNekudaIndex],
+                        price,
+                        rows,
+                        supplierPointIndex,
+                        supplierMishloahIndex,
+                        supplierDateIndex,
+                        supplierPriceIndex
+                    )
+                val drishatSapak = nearestAmount?.let { String.format("%.2f", it) }
+                val leTashlum = price?.toDouble()
+                currRow.createCell(sapakIndex).setCellValue(drishatSapak ?: "<NO>")
+                if (nearestAmount != null && leTashlum != null) {
+                    val diff = String.format("%.2f", leTashlum - nearestAmount)
+                    currRow.createCell(sapakIndex + 1).setCellValue(diff)
+                }
+            }
         }
 
 
@@ -73,41 +95,52 @@ object AppExcel {
         supplierMishloahIndex: Int,
         supplierDateIndex: Int,
         supplierPriceIndex: Int
-    ): List<String?>? {
+    ): Double? {
+        if (price.isNullOrEmpty()) return null
+        val priceDouble = price.toDouble()
         val result = rows.filter { r ->
             val p = r[supplierPointIndex]
             val d = r[supplierDateIndex]
-            val pr = r[supplierPriceIndex]
-            val m = r[supplierMishloahIndex]
 
-            same(mishloah, date, nekuda, price, m, d, p, pr)
+            if (priceDouble < 0) sameForNegative(nekuda, p) else same(date, nekuda, d, p)
         }
-        val best = result.sortedBy { Math.abs(price!!.toDouble() - it[supplierPriceIndex]!!.toDouble()) }
+        val grouppedByMishloach = result.groupBy { it[supplierMishloahIndex] }
+        val amountsGrouppedByMishloach =
+            grouppedByMishloach.mapValues { (k, v) -> v.sumOf { it[supplierPriceIndex]?.toDouble() ?: 0.0 } }
+        if (amountsGrouppedByMishloach.containsKey(mishloah)) {
+            print("*")
+            return amountsGrouppedByMishloach[mishloah]
+        }
+        print(grouppedByMishloach.size)
+        val best = amountsGrouppedByMishloach.values.sortedBy { abs(priceDouble - it) }.firstOrNull()
 
-        return best.firstOrNull()
+        return if (comparePrices(best, price, 10)) best else null
 
     }
 
     private fun same(
-        mishloah: String?,
         date: String?,
         nekuda: String?,
-        price: String?,
-        m: String?,
         d: String?,
-        p: String?,
-        pr: String?
+        p: String?
     ): Boolean {
         val nekudaName = (nekuda?.split(" ") ?: listOf("<>"))[0]
         return date == d &&
                 p?.contains(nekudaName) ?: false
-        // && comparePrices(price, pr, 5)
     }
 
-    private fun comparePrices(p1: String?, p2: String?, percents: Int): Boolean {
+    private fun sameForNegative(
+        nekuda: String?,
+        p: String?
+    ): Boolean {
+        val nekudaName = (nekuda?.split(" ") ?: listOf("<>"))[0]
+        return p?.contains(nekudaName) ?: false
+    }
+
+    private fun comparePrices(p1: Double?, p2: String?, percents: Int): Boolean {
         if (p1 == null || p2 == null)
             return false
-        val diff = Math.abs(p1.toDouble() - p2.toDouble()) / p1.toDouble()
+        val diff = Math.abs(p1 - p2.toDouble()) / p1.toDouble()
         return diff <= percents / 100.0
     }
 
